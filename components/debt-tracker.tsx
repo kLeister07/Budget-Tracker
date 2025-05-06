@@ -9,20 +9,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Plus, Pencil, Trash2, Calendar as CalendarIcon, ArrowUpDown } from 'lucide-react';
 import { useToast } from "@/hooks/use-toast";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-// import confetti from 'canvas-confetti';
+import confetti from 'canvas-confetti';
 import { format, parse, isValid } from 'date-fns';
 import { cn } from "@/lib/utils";
 import { useBudget } from '@/context/BudgetContext';
 import { Calendar } from '@/components/ui/calendar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-async function fireConfetti() {
-  if (typeof window === "undefined") return;
-  console.log("[confetti] firing…");          // 👈 temporary trace
-
-  const { default: confetti } = await import("canvas-confetti");
-  confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-}
 
 type SortType = 'balance-asc' | 'balance-desc' | 'interest-asc' | 'interest-desc';
 
@@ -60,36 +53,29 @@ export function DebtTracker() {
   });
   const [progress, setProgress] = useState<{ [key: string]: number }>({});
 
-  // const triggerCelebration = (debtName: string) => {
-  //   try {
-  //     // Check if confetti is available and working
-  //     if (typeof confetti === 'function') {
-  //       confetti({
-  //         particleCount: 100,
-  //         spread: 70,
-  //         origin: { y: 0.6 }
-  //       });
-  //     } else {
-  //       console.warn('confetti function is not available');
-  //     }
-  //   } catch (error) {
-  //     console.error('Error triggering confetti:', error);
-  //     // Continue without confetti, but still show the toast
-  //   }
-
-  //   toast({
-  //     title: "Debt Paid Off! 🎉",
-  //     description: `Congratulations! ${debtName} has been fully paid off!`,
-  //   });
-  // };
-
   const triggerCelebration = (debtName: string) => {
-    fireConfetti().catch(console.error);
+    try {
+      // Check if confetti is available and working
+      if (typeof confetti === 'function') {
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 }
+        });
+      } else {
+        console.warn('confetti function is not available');
+      }
+    } catch (error) {
+      console.error('Error triggering confetti:', error);
+      // Continue without confetti, but still show the toast
+    }
+
     toast({
       title: "Debt Paid Off! 🎉",
       description: `Congratulations! ${debtName} has been fully paid off!`,
     });
   };
+
 
   const handleAddDebt = () => {
     if (
