@@ -53,28 +53,52 @@ export function DebtTracker() {
   });
   const [progress, setProgress] = useState<{ [key: string]: number }>({});
 
+  // const triggerCelebration = (debtName: string) => {
+  //   try {
+  //     // Check if confetti is available and working
+  //     if (typeof confetti === 'function') {
+  //       confetti({
+  //         particleCount: 100,
+  //         spread: 70,
+  //         origin: { y: 0.6 }
+  //       });
+  //     } else {
+  //       console.warn('confetti function is not available');
+  //     }
+  //   } catch (error) {
+  //     console.error('Error triggering confetti:', error);
+  //     // Continue without confetti, but still show the toast
+  //   }
+
+  //   toast({
+  //     title: "Debt Paid Off! 🎉",
+  //     description: `Congratulations! ${debtName} has been fully paid off!`,
+  //   });
+  // };
+
   const triggerCelebration = (debtName: string) => {
     try {
-      // Check if confetti is available and working
-      if (typeof confetti === 'function') {
+      // Ensure we’re on the client and confetti is a function
+      if (typeof window !== "undefined" && typeof confetti === "function") {
         confetti({
           particleCount: 100,
           spread: 70,
-          origin: { y: 0.6 }
+          origin: { y: 0.6 },
         });
       } else {
-        console.warn('confetti function is not available');
+        console.warn("confetti function is not available or running on the server");
       }
     } catch (error) {
-      console.error('Error triggering confetti:', error);
-      // Continue without confetti, but still show the toast
+      console.error("Error triggering confetti:", error);
+      // continue gracefully—toast still shows
     }
-
+  
     toast({
       title: "Debt Paid Off! 🎉",
       description: `Congratulations! ${debtName} has been fully paid off!`,
     });
   };
+  
 
 
   const handleAddDebt = () => {
