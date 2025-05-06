@@ -1,24 +1,25 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Turn off SWC's minifier to avoid issues
+  // Disable the buggy SWC minifier (turn back on later if you upgrade Next)
   swcMinify: false,
 
-  // Ignore ESLint errors during builds
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  
-  // Disable image optimization for simplicity
+  // Skip ESLint during CI/Netlify builds
+  eslint: { ignoreDuringBuilds: true },
+
+  // Skip Next‑optimized image loader (keeps build simple on Netlify)
   images: { unoptimized: true },
 
-  // Configure webpack
-  webpack: (config, { isServer, dev }) => {
-    // Disable cache in development to prevent ENOENT errors
-    if (dev) {
-      config.cache = false;
-    }
+  // Transpile the CommonJS package so we get a proper default export
+  transpilePackages: ["canvas-confetti"],
 
-    // Fix for canvas-confetti on the client
+  // Stand‑alone output folder (Netlify likes this)
+  output: "standalone",
+
+  webpack: (config, { isServer, dev }) => {
+    // Disable cache in dev to avoid intermittent ENOENT errors
+    if (dev) config.cache = false;
+
+    // Provide fallbacks for browser build (canvas-confetti pulls 'fs' in SSR mode)
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -30,12 +31,6 @@ const nextConfig = {
 
     return config;
   },
-
-  // Transpile canvas-confetti so it works with Next's SWC loader
-  transpilePackages: ['canvas-confetti'],
-  
-  // Output settings for Netlify
-  output: 'standalone',
 };
 
 module.exports = nextConfig;
