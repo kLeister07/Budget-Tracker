@@ -1,12 +1,6 @@
-# netlify.toml - configuration for Netlify deployment
 [build]
-  command = "npm run clean && npm run build"
-  publish = ".next"
+command = "npm run build"
+publish = ".next"
 
 [[plugins]]
-  package = "@netlify/plugin-nextjs"
-
-# Set environment variables
-[build.environment]
-  NODE_VERSION = "18"
-  NPM_FLAGS = "--legacy-peer-deps"
+package = "@netlify/next-runtime"
