@@ -18,6 +18,7 @@ const initialState: BudgetState = {
   lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
 };
 
+
 const MAX_BANK_BALANCE = 1_000_000_000; // 1B
 
 const safelyParseDate = (dateString: string, formatStr: string, defaultDate: Date): Date => {
