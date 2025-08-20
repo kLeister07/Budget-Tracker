@@ -1,9 +1,14 @@
-"use client";
+// context/BudgetContext.tsx
+'use client';
 
-import React, { createContext, useContext, useReducer, useEffect } from 'react';
-import { BudgetState, BudgetAction, Bill, Debt, Income, Task } from '@/app/types/budget';
+import React, { createContext, useContext, useReducer, useEffect, useRef } from 'react';
 import { format, parse, addMonths, isSameMonth, isValid } from 'date-fns';
+import { db } from '@/lib/firebase';
+import { useAuth } from '@/context/AuthContext';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import type { BudgetState, BudgetAction } from '@/app/types/budget';
 
+// -------- constants / utils (unchanged) --------
 const initialState: BudgetState = {
   bankBalance: 0,
   bills: [],
@@ -13,208 +18,88 @@ const initialState: BudgetState = {
   lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
 };
 
-// Maximum reasonable bank balance to prevent errors
-const MAX_BANK_BALANCE = 1000000000; // 1 billion
 
-// Safe date parsing function to handle errors
+const MAX_BANK_BALANCE = 1_000_000_000; // 1B
+
 const safelyParseDate = (dateString: string, formatStr: string, defaultDate: Date): Date => {
   try {
     const date = parse(dateString, formatStr, defaultDate);
     return isValid(date) ? date : defaultDate;
-  } catch (error) {
-    console.error('Error parsing date:', dateString, error);
+  } catch {
     return defaultDate;
   }
 };
 
-const saveState = (state: BudgetState) => {
-  if (typeof window !== 'undefined') {
-    try {
-      // First check if localStorage is available
-      if (typeof localStorage === 'undefined') {
-        console.error('localStorage is not available');
-        return;
-      }
-      
-      // Try setting a test item to check if localStorage works
-      localStorage.setItem('budgetStateTest', 'test');
-      localStorage.removeItem('budgetStateTest');
-      
-      // If we got here, localStorage seems to be working
-      const stateString = JSON.stringify(state);
-      localStorage.setItem('budgetState', stateString);
-    } catch (error) {
-      console.error('Failed to save state to localStorage:', error);
-      // We'll continue silently without saving state
-    }
-  }
-};
+// ---------- INTERNAL action (for Firestore hydration only) ----------
+type InternalAction = BudgetAction | { type: 'HYDRATE'; payload: BudgetState };
 
-const loadState = (): BudgetState | undefined => {
-  if (typeof window !== 'undefined') {
-    try {
-      // First check if localStorage is available
-      if (typeof localStorage === 'undefined') {
-        console.error('localStorage is not available');
-        return undefined;
-      }
-      
-      const savedState = localStorage.getItem('budgetState');
-      
-      if (!savedState) {
-        return undefined;
-      }
-      
-      try {
-        const parsedState = JSON.parse(savedState);
-        
-        // Validate that the parsed state has the expected structure
-        if (
-          typeof parsedState === 'object' && 
-          parsedState !== null &&
-          'bankBalance' in parsedState &&
-          'bills' in parsedState &&
-          'incomes' in parsedState &&
-          'debts' in parsedState &&
-          'tasks' in parsedState
-        ) {
-          return parsedState;
-        } else {
-          console.error('Invalid state structure in localStorage');
-          return undefined;
-        }
-      } catch (parseError) {
-        console.error('Failed to parse state from localStorage:', parseError);
-        // Remove the invalid state to prevent future errors
-        try {
-          localStorage.removeItem('budgetState');
-        } catch (removeError) {
-          console.error('Failed to remove invalid state from localStorage:', removeError);
-        }
-        return undefined;
-      }
-    } catch (error) {
-      console.error('Failed to access localStorage:', error);
-      return undefined;
-    }
+// ---------- reducer (your logic + HYDRATE) ----------
+function budgetReducer(state: BudgetState, action: InternalAction): BudgetState {
+  if (action.type === 'HYDRATE') {
+    const next = action.payload;
+    // minimal shape check
+    if (!next || typeof next !== 'object' || typeof next.bankBalance !== 'number') return state;
+    return next;
   }
-  return undefined;
-};
 
-function budgetReducer(state: BudgetState, action: BudgetAction): BudgetState {
   let newState: BudgetState;
-
   switch (action.type) {
     case 'UPDATE_BANK_BALANCE': {
-      // Ensure the amount is a valid number and within reasonable limits
       const amount = action.payload.amount;
-      if (isNaN(amount) || !isFinite(amount)) {
-        return state;
-      }
-      
-      // Cap at reasonable maximum to prevent overflow issues
+      if (isNaN(amount) || !isFinite(amount)) return state;
       const safeAmount = Math.min(Math.max(amount, -MAX_BANK_BALANCE), MAX_BANK_BALANCE);
-      
-      newState = {
-        ...state,
-        bankBalance: safeAmount,
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+      newState = { ...state, bankBalance: safeAmount, lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
     }
-
     case 'ADD_BILL': {
-      // Validate that the bill has valid properties
       const bill = action.payload;
-      if (typeof bill.amount !== 'number' || isNaN(bill.amount)) {
-        return state;
-      }
-      
-      newState = {
-        ...state,
-        bills: [...state.bills, action.payload],
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+      if (typeof bill.amount !== 'number' || isNaN(bill.amount)) return state;
+      newState = { ...state, bills: [...state.bills, bill], lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
     }
-
     case 'UPDATE_BILL': {
-      // Validate the updated bill
       const bill = action.payload;
-      if (typeof bill.amount !== 'number' || isNaN(bill.amount)) {
-        return state;
-      }
-      
+      if (typeof bill.amount !== 'number' || isNaN(bill.amount)) return state;
       newState = {
         ...state,
-        bills: state.bills.map((b) => 
-          b.id === action.payload.id ? action.payload : b
-        ),
+        bills: state.bills.map(b => (b.id === bill.id ? bill : b)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
     }
-
     case 'DELETE_BILL':
       newState = {
         ...state,
-        bills: state.bills.filter((bill) => bill.id !== action.payload.id),
+        bills: state.bills.filter(b => b.id !== action.payload.id),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
 
     case 'TOGGLE_BILL_PAID': {
-      const bill = state.bills.find((b) => b.id === action.payload.billId);
-      
+      const bill = state.bills.find(b => b.id === action.payload.billId);
       if (!bill) return state;
-      
+
       const updatedBill = { ...bill, isPaid: !bill.isPaid };
-      let updatedDebts = [...state.debts];
       let updatedBalance = state.bankBalance;
-      
-      // Safely get bill amount
-      const billAmount = typeof bill.amount === 'number' && !isNaN(bill.amount) ? bill.amount : 0;
-      
-      // If marking as paid
-      if (!bill.isPaid) {
-        // Decrease bank balance
-        updatedBalance = Math.max(-MAX_BANK_BALANCE, updatedBalance - billAmount);
-        
-        // If linked to a debt, reduce the debt balance
-        if (bill.linkedDebtId) {
-          updatedDebts = updatedDebts.map((debt) => {
-            if (debt.id === bill.linkedDebtId) {
-              const newBalance = Math.max(0, debt.currentBalance - billAmount);
-              return {
-                ...debt,
-                currentBalance: newBalance,
-              };
-            }
-            return debt;
-          });
-        }
-      } else {
-        // If marking as unpaid, reverse the changes
-        updatedBalance = Math.min(MAX_BANK_BALANCE, updatedBalance + billAmount);
-        
-        if (bill.linkedDebtId) {
-          updatedDebts = updatedDebts.map((debt) => {
-            if (debt.id === bill.linkedDebtId) {
-              const newBalance = debt.currentBalance + billAmount;
-              return {
-                ...debt,
-                currentBalance: newBalance > debt.totalAmount ? debt.totalAmount : newBalance,
-              };
-            }
-            return debt;
-          });
-        }
+      const amt = typeof bill.amount === 'number' && !isNaN(bill.amount) ? bill.amount : 0;
+
+      if (!bill.isPaid) updatedBalance = Math.max(-MAX_BANK_BALANCE, updatedBalance - amt);
+      else updatedBalance = Math.min(MAX_BANK_BALANCE, updatedBalance + amt);
+
+      // adjust debts if linked
+      let updatedDebts = state.debts;
+      if (bill.linkedDebtId) {
+        updatedDebts = updatedDebts.map(d => {
+          if (d.id !== bill.linkedDebtId) return d;
+          const nb = !bill.isPaid ? Math.max(0, d.currentBalance - amt) : Math.min(d.totalAmount, d.currentBalance + amt);
+          return { ...d, currentBalance: nb };
+        });
       }
-      
+
       newState = {
         ...state,
         bankBalance: updatedBalance,
-        bills: state.bills.map((b) => (b.id === action.payload.billId ? updatedBill : b)),
+        bills: state.bills.map(b => (b.id === bill.id ? updatedBill : b)),
         debts: updatedDebts,
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
@@ -222,367 +107,229 @@ function budgetReducer(state: BudgetState, action: BudgetAction): BudgetState {
     }
 
     case 'ADD_INCOME': {
-      // Validate that the income has valid properties
-      const income = action.payload;
-      if (typeof income.amount !== 'number' || isNaN(income.amount)) {
-        return state;
-      }
-      
-      newState = {
-        ...state,
-        incomes: [...state.incomes, action.payload],
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+      const inc = action.payload;
+      if (typeof inc.amount !== 'number' || isNaN(inc.amount)) return state;
+      newState = { ...state, incomes: [...state.incomes, inc], lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
     }
-
     case 'UPDATE_INCOME': {
-      // Validate the updated income
-      const income = action.payload;
-      if (typeof income.amount !== 'number' || isNaN(income.amount)) {
-        return state;
-      }
-      
+      const inc = action.payload;
+      if (typeof inc.amount !== 'number' || isNaN(inc.amount)) return state;
       newState = {
         ...state,
-        incomes: state.incomes.map((inc) => 
-          inc.id === action.payload.id ? action.payload : inc
-        ),
+        incomes: state.incomes.map(i => (i.id === inc.id ? inc : i)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
     }
-
     case 'DELETE_INCOME':
       newState = {
         ...state,
-        incomes: state.incomes.filter((income) => income.id !== action.payload.id),
+        incomes: state.incomes.filter(i => i.id !== action.payload.id),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
 
     case 'TOGGLE_INCOME_RECEIVED': {
-      const income = state.incomes.find((i) => i.id === action.payload.incomeId);
-      
-      if (!income) return state;
-      
-      const updatedIncome = { ...income, isReceived: !income.isReceived };
-      let updatedBalance = state.bankBalance;
-      
-      // Safely get income amount
-      const incomeAmount = typeof income.amount === 'number' && !isNaN(income.amount) ? income.amount : 0;
-      
-      // If marking as received, add to bank balance
-      if (!income.isReceived) {
-        updatedBalance = Math.min(MAX_BANK_BALANCE, updatedBalance + incomeAmount);
-      } else {
-        // If marking as not received, subtract from bank balance
-        updatedBalance = Math.max(-MAX_BANK_BALANCE, updatedBalance - incomeAmount);
-      }
-      
+      const inc = state.incomes.find(i => i.id === action.payload.incomeId);
+      if (!inc) return state;
+      const updated = { ...inc, isReceived: !inc.isReceived };
+      const amt = typeof inc.amount === 'number' && !isNaN(inc.amount) ? inc.amount : 0;
+      const updatedBalance = !inc.isReceived
+        ? Math.min(MAX_BANK_BALANCE, state.bankBalance + amt)
+        : Math.max(-MAX_BANK_BALANCE, state.bankBalance - amt);
+
       newState = {
         ...state,
         bankBalance: updatedBalance,
-        incomes: state.incomes.map((i) => (i.id === action.payload.incomeId ? updatedIncome : i)),
+        incomes: state.incomes.map(i => (i.id === inc.id ? updated : i)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
     }
 
     case 'ADD_DEBT': {
-      // Validate that the debt has valid properties
-      const debt = action.payload;
+      const d = action.payload;
       if (
-        typeof debt.totalAmount !== 'number' || isNaN(debt.totalAmount) ||
-        typeof debt.currentBalance !== 'number' || isNaN(debt.currentBalance) ||
-        typeof debt.interestRate !== 'number' || isNaN(debt.interestRate) ||
-        typeof debt.minimumPayment !== 'number' || isNaN(debt.minimumPayment)
-      ) {
-        return state;
-      }
-      
-      newState = {
-        ...state,
-        debts: [...state.debts, action.payload],
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+        [d.totalAmount, d.currentBalance, d.interestRate, d.minimumPayment].some(v => typeof v !== 'number' || isNaN(v))
+      ) return state;
+      newState = { ...state, debts: [...state.debts, d], lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
     }
-
     case 'UPDATE_DEBT': {
-      // Validate the updated debt
-      const debt = action.payload;
+      const d = action.payload;
       if (
-        typeof debt.totalAmount !== 'number' || isNaN(debt.totalAmount) ||
-        typeof debt.currentBalance !== 'number' || isNaN(debt.currentBalance) ||
-        typeof debt.interestRate !== 'number' || isNaN(debt.interestRate) ||
-        typeof debt.minimumPayment !== 'number' || isNaN(debt.minimumPayment)
-      ) {
-        return state;
-      }
-      
+        [d.totalAmount, d.currentBalance, d.interestRate, d.minimumPayment].some(v => typeof v !== 'number' || isNaN(v))
+      ) return state;
       newState = {
         ...state,
-        debts: state.debts.map((d) => 
-          d.id === action.payload.id ? action.payload : d
-        ),
+        debts: state.debts.map(x => (x.id === d.id ? d : x)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
     }
-
     case 'DELETE_DEBT': {
-      const updatedDebts = state.debts.filter((debt) => debt.id !== action.payload.id);
-      
-      // Remove debt ID references from bills
-      const updatedBills = state.bills.map((bill) => {
-        if (bill.linkedDebtId === action.payload.id) {
-          return { ...bill, linkedDebtId: null };
-        }
-        return bill;
-      });
-      
-      // If the deleted debt was the focus debt, set a new focus
-      let finalDebts = [...updatedDebts];
-      if (state.debts.find((d) => d.id === action.payload.id)?.isFocus && updatedDebts.length > 0) {
-        // Set the smallest debt as the new focus
-        const smallestDebt = [...updatedDebts].sort((a, b) => {
-          const aBalance = typeof a.currentBalance === 'number' && !isNaN(a.currentBalance) ? a.currentBalance : 0;
-          const bBalance = typeof b.currentBalance === 'number' && !isNaN(b.currentBalance) ? b.currentBalance : 0;
-          return aBalance - bBalance;
-        })[0];
-        
-        finalDebts = updatedDebts.map(debt => ({
-          ...debt,
-          isFocus: debt.id === smallestDebt.id
-        }));
+      const pruned = state.debts.filter(d => d.id !== action.payload.id);
+      const bills = state.bills.map(b => (b.linkedDebtId === action.payload.id ? { ...b, linkedDebtId: null } : b));
+
+      // choose new focus if removed one was focus
+      let finalDebts = pruned;
+      const removedWasFocus = state.debts.find(d => d.id === action.payload.id)?.isFocus;
+      if (removedWasFocus && pruned.length > 0) {
+        const smallest = [...pruned].sort((a, b) => (a.currentBalance || 0) - (b.currentBalance || 0))[0];
+        finalDebts = pruned.map(d => ({ ...d, isFocus: d.id === smallest.id }));
       }
-      
-      newState = {
-        ...state,
-        debts: finalDebts,
-        bills: updatedBills,
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+
+      newState = { ...state, debts: finalDebts, bills, lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
     }
-      
     case 'SET_FOCUS_DEBT':
       newState = {
         ...state,
-        debts: state.debts.map((debt) => ({
-          ...debt,
-          isFocus: action.payload.id === '' ? false : debt.id === action.payload.id,
-        })),
+        debts: state.debts.map(d => ({ ...d, isFocus: action.payload.id === '' ? false : d.id === action.payload.id })),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
-      
+
     case 'ADD_TASK':
-      newState = {
-        ...state,
-        tasks: [...state.tasks, action.payload],
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+      newState = { ...state, tasks: [...state.tasks, action.payload], lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
-      
     case 'UPDATE_TASK':
       newState = {
         ...state,
-        tasks: state.tasks.map((task) => 
-          task.id === action.payload.id ? action.payload : task
-        ),
+        tasks: state.tasks.map(t => (t.id === action.payload.id ? action.payload : t)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
-      
     case 'TOGGLE_TASK':
       newState = {
         ...state,
-        tasks: state.tasks.map((task) => 
-          task.id === action.payload.id ? { ...task, completed: !task.completed } : task
-        ),
+        tasks: state.tasks.map(t => (t.id === action.payload.id ? { ...t, completed: !t.completed } : t)),
         lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
       };
       break;
-      
     case 'DELETE_TASK':
-      newState = {
-        ...state,
-        tasks: state.tasks.filter((task) => task.id !== action.payload.id),
-        lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-      };
+      newState = { ...state, tasks: state.tasks.filter(t => t.id !== action.payload.id), lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       break;
-      
+
     case 'GENERATE_RECURRING_ITEMS': {
       try {
-        console.log('Starting GENERATE_RECURRING_ITEMS');
         const targetDate = safelyParseDate(action.payload.date, 'MMM d, yyyy', new Date());
-        
-        // Sets to track processed items to prevent duplicates
         const processedBillIds = new Set<string>();
         const processedIncomeIds = new Set<string>();
-        
-        // Generate recurring bills
-        console.log('Filtering existing bills');
-        const existingBills = state.bills.filter((bill) => {
-          try {
-            const billDate = safelyParseDate(bill.dueDate, 'MMM d, yyyy', new Date());
-            return !isSameMonth(billDate, targetDate);
-          } catch (error) {
-            console.error('Error filtering bills:', error);
-            return true; // Keep the bill if there's an error
-          }
+
+        const existingBills = state.bills.filter(b => {
+          try { return !isSameMonth(safelyParseDate(b.dueDate, 'MMM d, yyyy', new Date()), targetDate); }
+          catch { return true; }
         });
-        
-        console.log('Creating recurring bills');
-        const recurringBills: Bill[] = [];
-        
-        state.bills
-          .filter(bill => bill.isRecurring)
-          .forEach(bill => {
-            if (processedBillIds.has(bill.id)) {
-              return; // Skip if already processed to prevent duplicates
-            }
-            
-            processedBillIds.add(bill.id);
-            
+
+        const recurringBills = state.bills
+          .filter(b => b.isRecurring)
+          .flatMap(b => {
+            if (processedBillIds.has(b.id)) return [];
+            processedBillIds.add(b.id);
             try {
-              const currentDate = safelyParseDate(bill.dueDate, 'MMM d, yyyy', new Date());
-              const newDate = addMonths(currentDate, 1);
-              
-              recurringBills.push({
-                ...bill,
-                id: `${Date.now().toString()}-${Math.random().toString(36).substr(2, 9)}`,
-                isPaid: false,
-                dueDate: format(newDate, 'MMM d, yyyy')
-              });
-            } catch (error) {
-              console.error('Error creating recurring bill:', error);
-              
-              // Fallback to creating a copy with the same date if there's an error
-              recurringBills.push({
-                ...bill,
-                id: `${Date.now().toString()}-${Math.random().toString(36).substr(2, 9)}`,
-                isPaid: false
-              });
+              const d = addMonths(safelyParseDate(b.dueDate, 'MMM d, yyyy', new Date()), 1);
+              return [{ ...b, id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, isPaid: false, dueDate: format(d, 'MMM d, yyyy') }];
+            } catch {
+              return [{ ...b, id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, isPaid: false }];
             }
           });
-          
-        // Generate recurring incomes
-        console.log('Filtering existing incomes');
-        const existingIncomes = state.incomes.filter((income) => {
-          try {
-            const incomeDate = safelyParseDate(income.expectedDate, 'MMM d, yyyy', new Date());
-            return !isSameMonth(incomeDate, targetDate);
-          } catch (error) {
-            console.error('Error filtering incomes:', error);
-            return true; // Keep the income if there's an error
-          }
+
+        const existingIncomes = state.incomes.filter(i => {
+          try { return !isSameMonth(safelyParseDate(i.expectedDate, 'MMM d, yyyy', new Date()), targetDate); }
+          catch { return true; }
         });
-        
-        console.log('Creating recurring incomes');
-        const recurringIncomes: Income[] = [];
-        
-        state.incomes
-          .filter(income => income.isRecurring)
-          .forEach(income => {
-            if (processedIncomeIds.has(income.id)) {
-              return; // Skip if already processed to prevent duplicates
-            }
-            
-            processedIncomeIds.add(income.id);
-            
+
+        const recurringIncomes = state.incomes
+          .filter(i => i.isRecurring)
+          .flatMap(i => {
+            if (processedIncomeIds.has(i.id)) return [];
+            processedIncomeIds.add(i.id);
             try {
-              const currentDate = safelyParseDate(income.expectedDate, 'MMM d, yyyy', new Date());
-              const newDate = addMonths(currentDate, 1);
-              
-              recurringIncomes.push({
-                ...income,
-                id: `${Date.now().toString()}-${Math.random().toString(36).substr(2, 9)}`,
-                isReceived: false,
-                expectedDate: format(newDate, 'MMM d, yyyy')
-              });
-            } catch (error) {
-              console.error('Error creating recurring income:', error);
-              
-              // Fallback to creating a copy with the same date if there's an error
-              recurringIncomes.push({
-                ...income,
-                id: `${Date.now().toString()}-${Math.random().toString(36).substr(2, 9)}`,
-                isReceived: false
-              });
+              const d = addMonths(safelyParseDate(i.expectedDate, 'MMM d, yyyy', new Date()), 1);
+              return [{ ...i, id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, isReceived: false, expectedDate: format(d, 'MMM d, yyyy') }];
+            } catch {
+              return [{ ...i, id: `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, isReceived: false }];
             }
           });
-        
-        console.log('Finalizing state with recurring items');
+
         newState = {
           ...state,
           bills: [...existingBills, ...recurringBills],
           incomes: [...existingIncomes, ...recurringIncomes],
           lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
         };
-      } catch (error) {
-        console.error('Major error in GENERATE_RECURRING_ITEMS:', error);
-        // If there's an error processing dates, return the original state
-        newState = {
-          ...state,
-          lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss'),
-        };
+      } catch {
+        newState = { ...state, lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
       }
       break;
     }
-      
+
     default:
       return state;
   }
-  
+
   return newState;
 }
 
+// ---------- context ----------
 type BudgetContextType = {
   state: BudgetState;
-  dispatch: React.Dispatch<BudgetAction>;
+  dispatch: React.Dispatch<BudgetAction>; // external callers only see your union
   resetBudget: () => void;
 };
 
 const BudgetContext = createContext<BudgetContextType | undefined>(undefined);
 
+// debounce helper
+function useDebounced<T extends (...args: any[]) => void>(fn: T, ms: number) {
+  const t = useRef<number | null>(null);
+  return (...args: Parameters<T>) => {
+    if (t.current) window.clearTimeout(t.current);
+    t.current = window.setTimeout(() => fn(...args), ms) as unknown as number;
+  };
+}
+
 export function BudgetProvider({ children }: { children: React.ReactNode }) {
-  const [state, dispatch] = useReducer(
-    budgetReducer,
-    loadState() || initialState
-  );
+  const { user } = useAuth();
 
+  // Keep internal reducer with InternalAction
+  const [state, dispatchInternal] = useReducer(budgetReducer, initialState);
+
+  // Adapter so components only dispatch BudgetAction (HYDRATE is internal)
+  const dispatch: React.Dispatch<BudgetAction> = (action) => dispatchInternal(action);
+
+  // firestore doc path: users/{uid}/budget/state
+  const docRef = user ? doc(db, `users/${user.uid}/budget/state`) : null;
+
+  // subscribe to Firestore (hydrate on changes)
   useEffect(() => {
-    try {
-      saveState(state);
-    } catch (error) {
-      console.error('Error saving state', error);
-    }
-  }, [state]);
-
-  const resetBudget = () => {
-    if (typeof window !== 'undefined') {
-      try {
-        // First, clear local storage
-        localStorage.removeItem('budgetState');
-        
-        // Create a fresh state with current timestamp
-        const freshState = {
-          ...initialState,
-          lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss')
-        };
-        
-        // Save empty state to localStorage
-        localStorage.setItem('budgetState', JSON.stringify(freshState));
-        
-        // Force a complete reload of the page to ensure a clean state
-        window.location.reload();
-      } catch (error) {
-        console.error('Failed to reset budget', error);
+    if (!docRef) return;
+    const unsub = onSnapshot(docRef, snap => {
+      if (snap.exists()) {
+        dispatchInternal({ type: 'HYDRATE', payload: snap.data() as BudgetState });
+      } else {
+        // seed with current memory state if no doc yet
+        setDoc(docRef, state).catch(console.error);
       }
-    }
+    }, console.error);
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.uid]);
+
+  // debounced persist on state change
+  const persist = useDebounced(async (next: BudgetState) => {
+    if (!docRef) return;
+    try { await setDoc(docRef, next, { merge: true }); } catch (e) { console.error('Firestore save failed', e); }
+  }, 300);
+
+  useEffect(() => { if (docRef) persist(state); /* else: logged out, keep in memory */ }, [state, docRef, persist]);
+
+  const resetBudget = async () => {
+    const fresh = { ...initialState, lastUpdated: format(new Date(), 'MMM d, yyyy HH:mm:ss') };
+    dispatchInternal({ type: 'HYDRATE', payload: fresh });
+    if (docRef) await setDoc(docRef, fresh, { merge: false });
   };
 
   return (
@@ -593,9 +340,7 @@ export function BudgetProvider({ children }: { children: React.ReactNode }) {
 }
 
 export function useBudget() {
-  const context = useContext(BudgetContext);
-  if (context === undefined) {
-    throw new Error('useBudget must be used within a BudgetProvider');
-  }
-  return context;
+  const ctx = useContext(BudgetContext);
+  if (!ctx) throw new Error('useBudget must be used within a BudgetProvider');
+  return ctx;
 }
